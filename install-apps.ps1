@@ -60,7 +60,7 @@ $StandardApps = @(
     @{Name="Microsoft 365 Apps"; ID="Microsoft.Office"},
     @{Name="Microsoft Teams"; ID="Microsoft.Teams"},
     @{Name="Microsoft OneDrive"; ID="Microsoft.OneDrive"},
-    @{Name="Azure VPN Client"; ID="Microsoft.AzureVPNClient"}
+    @{Name="Azure VPN Client"; ID="9NP355QT2SQB"; Source="msstore"}
 )
 
 foreach ($App in $StandardApps) {
