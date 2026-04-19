@@ -92,36 +92,34 @@ foreach ($App in $StandardApps) {
 }
 
 # ============================================
-# PHASE 2: Install Adobe Reader (No Bloatware)
+# PHASE 2: Installing Adobe Acrobat Reader
 # ============================================
 Write-Log "=== PHASE 2: Installing Adobe Acrobat Reader ==="
 
-try {
-    # Check if already installed
-    $adobeInstalled = winget list --id Adobe.Acrobat.Reader.64-bit --exact 2>&1
+# Method 1: Try winget with comprehensive bloatware blocking
+Write-Log "Attempting installation via winget (no bloatware)..."
+$WingetResult = winget install --id Adobe.Acrobat.Reader.64-bit `
+    --silent `
+    --accept-package-agreements `
+    --accept-source-agreements `
+    --override "ALLUSERS=1 EULA_ACCEPT=YES SUPPRESS_APP_LAUNCH=YES ENABLE_CHROMEEXT=0 DISABLE_ARM_SERVICE_INSTALL=1 DISABLE_BROWSER_INTEGRATION=1 REMOVE_PREVIOUS_VERSIONS=1 ADD_THUMBNAILPREVIEW=0 DISABLEDESKTOPSHORTCUT=1 /qn /norestart" `
+    2>&1
+
+Write-Log $WingetResult
+
+if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
+    Write-Log "SUCCESS: Adobe Acrobat Reader installed"
     
-    if ($adobeInstalled -match "Adobe.Acrobat.Reader") {
-        Write-Log "INFO: Adobe Reader already installed"
-    } else {
-        Write-Log "Installing Adobe Acrobat Reader (64-bit, no add-ons)..."
-        
-        # Winget install with override to skip McAfee and other bloat
-        # The /msi parameter passes arguments to the MSI installer
-        $result = winget install --id Adobe.Acrobat.Reader.64-bit --silent --accept-package-agreements --accept-source-agreements --override "/quiet /norestart EULA_ACCEPT=YES DISABLE_ARM_SERVICE_INSTALL=1" 2>&1
-        
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
-            Write-Log "SUCCESS: Adobe Reader installed"
-        } else {
-            Write-Log "WARNING: Adobe Reader installation returned code $LASTEXITCODE"
-        }
-        
-        # Wait for Adobe to fully install before proceeding to Encompass
-        Write-Log "Waiting for Adobe Reader installation to complete..."
-        Start-Sleep -Seconds 15
-    }
-} catch {
-    Write-Log "ERROR installing Adobe Reader: $_"
+    # Remove McAfee if it snuck in anyway
+    Start-Sleep -Seconds 5
+    Write-Log "Checking for unwanted McAfee installation..."
+    winget uninstall --name "McAfee" --silent 2>&1 | Out-Null
+    
+} else {
+    Write-Log "WARNING: Adobe installation returned code $LASTEXITCODE"
 }
+
+Start-Sleep -Seconds 10
 
 # ============================================
 # PHASE 3: Install Encompass (Requires Admin + Adobe)
