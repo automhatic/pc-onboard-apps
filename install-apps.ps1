@@ -184,9 +184,9 @@ $AppsToVerify = @(
 foreach ($AppName in $AppsToVerify) {
     $installed = winget list | Select-String -Pattern $AppName -Quiet
     if ($installed) {
-        Write-Log "✓ VERIFIED: $AppName is installed"
+        Write-Log "[OK] VERIFIED: $AppName is installed"
     } else {
-        Write-Log "✗ NOT FOUND: $AppName may not be installed"
+        Write-Log "[MISSING] NOT FOUND: $AppName may not be installed"
     }
 }
 
