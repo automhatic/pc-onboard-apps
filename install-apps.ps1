@@ -1,236 +1,558 @@
-# ============================================================================
-# Windows Enrollment Script V1.1
-# Installs standard applications via Winget for new PC onboarding
-# ============================================================================
+<#
+.SYNOPSIS
+    Windows Device Enrollment Script V1.2 - Enhanced Verbose Edition
+.DESCRIPTION
+    Automatically installs standard applications for new Windows devices
+    Designed to run via Intune as SYSTEM account
+.NOTES
+    Author: IT Department
+    Version: 1.2
+    Last Updated: 2026-04-19
+    - Added verbose output and progress indicators
+    - Real-time installation status
+    - Enhanced error reporting
+#>
 
-# Create log directory
-$LogDir = "C:\ProgramData\EnrollmentScript"
-if (-not (Test-Path $LogDir)) {
-    New-Item -Path $LogDir -ItemType Directory -Force | Out-Null
-}
+#Requires -RunAsAdministrator
 
-$LogFile = Join-Path $LogDir "EnrollmentLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+# ============================================
+# CONFIGURATION
+# ============================================
+
+$LogFolder = "C:\ProgramData\EnrollmentScript"
+$LogFile = Join-Path $LogFolder "EnrollmentLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+
+# Application List
+$StandardApps = @(
+    @{ Name = "RingCentral"; ID = "RingCentral.RingCentral" }
+    @{ Name = "Microsoft 365 Apps"; ID = "Microsoft.Office" }
+    @{ Name = "Microsoft Teams"; ID = "Microsoft.Teams" }
+    @{ Name = "Microsoft OneDrive"; ID = "Microsoft.OneDrive" }
+    @{ Name = "Azure VPN Client"; ID = "9NP355QT2SQB" }
+    @{ Name = "Dynamic Theme"; ID = "9NBLGGH1ZBKW" }
+)
+
+# ============================================
+# FUNCTIONS
+# ============================================
 
 function Write-Log {
     param([string]$Message)
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogMessage = "$Timestamp - $Message"
-    Add-Content -Path $LogFile -Value $LogMessage
+    Add-Content -Path $LogFile -Value $LogMessage -Force
     Write-Host $LogMessage
 }
 
-Write-Log "=== Enrollment Script V1.1 Started ==="
-Write-Log "Running as: $env:USERNAME"
-
-# Verify Winget is available
-Write-Log "Verifying Winget availability..."
-$Winget = Get-Command winget -ErrorAction SilentlyContinue
-if (-not $Winget) {
-    Write-Log "ERROR: Winget not found. Exiting."
-    exit 1
+function Write-Progress-Bar {
+    param(
+        [string]$Activity,
+        [int]$PercentComplete,
+        [string]$Status
+    )
+    
+    $barLength = 40
+    $filled = [math]::Floor($barLength * $PercentComplete / 100)
+    $empty = $barLength - $filled
+    
+    $bar = "[" + ("█" * $filled) + ("░" * $empty) + "]"
+    
+    Write-Host "`r$Activity $bar $PercentComplete% - $Status" -NoNewline -ForegroundColor Cyan
 }
-Write-Log "Winget found at: $($Winget.Source)"
 
-# Application list
-$Apps = @(
-    @{ Name = "RingCentral"; ID = "RingCentral.RingCentral" },
-    @{ Name = "Microsoft 365 Apps"; ID = "Microsoft.Office" },
-    @{ Name = "Microsoft Teams"; ID = "Microsoft.Teams" },
-    @{ Name = "Microsoft OneDrive"; ID = "Microsoft.OneDrive" },
-    @{ Name = "Azure VPN Client"; ID = "9NP355QT2SQB" },
-    @{ Name = "Dynamic Theme"; ID = "9NBLGGH1ZBKW" }
-)
+function Test-WingetAvailable {
+    Write-Log "Verifying Winget availability..."
+    Write-Host "  → Searching for winget..." -ForegroundColor Gray
+    
+    try {
+        $WingetPath = (Get-Command winget -ErrorAction Stop).Source
+        Write-Log "Winget found at: $WingetPath"
+        Write-Host "  ✓ Winget found: $WingetPath" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Log "ERROR: Winget not found!"
+        Write-Host "  ✗ Winget not found!" -ForegroundColor Red
+        return $false
+    }
+}
 
-# === PHASE 1: Installing Standard Applications ===
-Write-Log "=== PHASE 1: Installing Standard Applications ==="
-
-$AppCount = 0
-foreach ($App in $Apps) {
-    $AppCount++
+function Install-App {
+    param($App, $CurrentNum, $TotalApps)
+    
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  APP $CurrentNum of $TotalApps: $($App.Name)" -ForegroundColor White
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Log "Installing: $($App.Name) ($($App.ID))"
     
     try {
-        # Check if already installed
+        # Step 1: Check if already installed
+        Write-Host "  [1/4] Checking if already installed..." -ForegroundColor Yellow
         $Installed = winget list --id $App.ID --exact 2>&1
         
         if ($Installed -match $App.ID) {
-            Write-Log "INFO: $($App.Name) already installed, skipping"
-            Start-Sleep -Seconds 3
-            continue
+            Write-Log "  ✓ $($App.Name) is already installed"
+            Write-Host "  ✓ Already installed - Skipping" -ForegroundColor Green
+            return $true
         }
         
-        # Install the app
+        Write-Host "  → Not installed, proceeding with installation" -ForegroundColor Gray
+        
+        # Step 2: Download
+        Write-Host "  [2/4] Downloading $($App.Name)..." -ForegroundColor Yellow
+        Write-Host "  → Contacting winget repository..." -ForegroundColor Gray
+        
+        # Step 3: Install
+        Write-Host "  [3/4] Installing (this may take 2-10 minutes)..." -ForegroundColor Yellow
+        Write-Host "  → Running silent installation..." -ForegroundColor Gray
+        
         $InstallArgs = @(
-            "install",
-            "--id", $App.ID,
-            "--exact",
-            "--silent",
-            "--accept-source-agreements",
+            "install"
+            "--id", $App.ID
+            "--exact"
+            "--silent"
             "--accept-package-agreements"
+            "--accept-source-agreements"
+            "--disable-interactivity"
         )
         
-        & winget $InstallArgs 2>&1 | Out-Null
+        # Create temp files for output
+        $outFile = "$env:TEMP\winget-out-$($App.ID).txt"
+        $errFile = "$env:TEMP\winget-err-$($App.ID).txt"
         
-        if ($LASTEXITCODE -eq 0) {
-            Write-Log "SUCCESS: $($App.Name) installed"
+        # Start the process
+        $process = Start-Process -FilePath "winget" `
+            -ArgumentList $InstallArgs `
+            -NoNewWindow `
+            -PassThru `
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile
+        
+        # Monitor progress
+        $timeout = 600 # 10 minutes
+        $elapsed = 0
+        $lastCheck = Get-Date
+        
+        Write-Host "  → Installation in progress" -NoNewline -ForegroundColor Gray
+        
+        while (-not $process.HasExited -and $elapsed -lt $timeout) {
+            Start-Sleep -Seconds 3
+            $elapsed += 3
+            
+            # Show activity indicator
+            Write-Host "." -NoNewline -ForegroundColor Gray
+            
+            # Check for installer processes every 15 seconds
+            if ($elapsed % 15 -eq 0) {
+                $installerNames = @("msiexec", "setup", "install", $App.Name.Split(" ")[0])
+                $activeInstaller = Get-Process | Where-Object { 
+                    $installerNames | ForEach-Object { 
+                        if ($_.ProcessName -match $_) { return $true }
+                    }
+                }
+                
+                if ($activeInstaller) {
+                    Write-Host "!" -NoNewline -ForegroundColor Yellow # Installer detected
+                }
+            }
+            
+            # Progress update every 30 seconds
+            if ($elapsed % 30 -eq 0) {
+                $minutes = [math]::Floor($elapsed / 60)
+                $seconds = $elapsed % 60
+                Write-Host " [{0:D2}:{1:D2}]" -f $minutes, $seconds -NoNewline -ForegroundColor DarkGray
+            }
+        }
+        
+        Write-Host "" # New line after progress dots
+        
+        # Check if timed out
+        if ($elapsed -ge $timeout) {
+            Write-Log "  ⚠ $($App.Name) installation timed out after $timeout seconds"
+            Write-Host "  ⚠ Installation timed out - may still be running in background" -ForegroundColor Yellow
+            try { $process.Kill() } catch {}
+            return $false
+        }
+        
+        $process.WaitForExit()
+        
+        # Step 4: Verify
+        Write-Host "  [4/4] Verifying installation..." -ForegroundColor Yellow
+        
+        # Read output
+        $output = ""
+        $errorOutput = ""
+        
+        if (Test-Path $outFile) {
+            $output = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $errFile) {
+            $errorOutput = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+        }
+        
+        # Check exit code
+        if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
+            Write-Log "  ✓ $($App.Name) installed successfully (Exit code: $($process.ExitCode))"
+            Write-Host "  ✓ Installation completed successfully!" -ForegroundColor Green
+            
+            if ($process.ExitCode -eq 3010) {
+                Write-Host "  ℹ Reboot required for this application" -ForegroundColor Cyan
+            }
+            
+            return $true
+            
+        } elseif ($process.ExitCode -eq -1978335189) {
+            # Already installed (different version)
+            Write-Log "  ✓ $($App.Name) already installed (different version)"
+            Write-Host "  ✓ Already installed (different version)" -ForegroundColor Green
+            return $true
+            
         } else {
-            Write-Log "WARNING: $($App.Name) installation returned code $LASTEXITCODE"
+            Write-Log "  ✗ $($App.Name) installation failed (Exit code: $($process.ExitCode))"
+            Write-Log "  Output: $output"
+            Write-Log "  Error: $errorOutput"
+            Write-Host "  ✗ Installation failed (Exit code: $($process.ExitCode))" -ForegroundColor Red
+            
+            if ($errorOutput) {
+                Write-Host "  Error details: $($errorOutput.Substring(0, [Math]::Min(200, $errorOutput.Length)))" -ForegroundColor Red
+            }
+            
+            return $false
         }
         
     } catch {
         Write-Log "ERROR: Failed to install $($App.Name): $($_.Exception.Message)"
+        Write-Host "  ✗ Exception: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        # Cleanup temp files
+        Remove-Item "$env:TEMP\winget-out-$($App.ID).txt" -ErrorAction SilentlyContinue
+        Remove-Item "$env:TEMP\winget-err-$($App.ID).txt" -ErrorAction SilentlyContinue
     }
-    
-    Start-Sleep -Seconds 3
 }
 
-# === PHASE 2: Installing Adobe Acrobat Reader ===
-Write-Log "=== PHASE 2: Installing Adobe Acrobat Reader ==="
-
-try {
+function Install-AdobeReader {
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  ADOBE ACROBAT READER" -ForegroundColor White
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Log "Installing Adobe Acrobat Reader (64-bit, no add-ons)..."
     
-    $AdobeInstall = winget install --id Adobe.Acrobat.Reader.64-bit `
-        --exact `
-        --silent `
-        --override "/sPB /rs /msi EULA_ACCEPT=YES" `
-        --accept-source-agreements `
-        --accept-package-agreements 2>&1
-    
-    Write-Log "$AdobeInstall"
-    
-    if ($LASTEXITCODE -eq 0) {
-        Write-Log "SUCCESS: Adobe Reader installed"
-    } else {
-        Write-Log "WARNING: Adobe Reader installation returned code $LASTEXITCODE"
-    }
-    
-    Write-Log "Waiting for Adobe Reader installation to complete..."
-    Start-Sleep -Seconds 15
-    
-} catch {
-    Write-Log "ERROR: Adobe Reader installation failed: $($_.Exception.Message)"
-}
-
-# === PHASE 3: Installing Encompass Smart Client ===
-Write-Log "=== PHASE 3: Installing Encompass Smart Client ==="
-Start-Sleep -Seconds 3
-
-# Check if Adobe Reader is installed (Encompass dependency)
-$AdobeInstalled = Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
-    Where-Object { $_.DisplayName -like "*Adobe Acrobat*" }
-
-if (-not $AdobeInstalled) {
-    Write-Log "WARNING: Adobe Reader not detected in registry, but continuing anyway..."
-}
-
-# Check for Encompass installer
-$EncompassInstallerPath = "C:\Temp\EncompassInstaller.exe"
-
-if (Test-Path $EncompassInstallerPath) {
-    Write-Log "Found Encompass installer at: $EncompassInstallerPath"
-    Write-Log "Installing Encompass Smart Client..."
-    
     try {
-        $EncompassInstall = Start-Process -FilePath $EncompassInstallerPath `
-            -ArgumentList "/S" `
-            -Wait `
-            -PassThru
+        Write-Host "  [1/3] Checking if already installed..." -ForegroundColor Yellow
+        $AdobeInstalled = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+            Where-Object { $_.DisplayName -match "Adobe Acrobat Reader" }
         
-        if ($EncompassInstall.ExitCode -eq 0) {
-            Write-Log "SUCCESS: Encompass Smart Client installed"
+        if ($AdobeInstalled) {
+            Write-Log "  ✓ Adobe Reader already installed: $($AdobeInstalled.DisplayName)"
+            Write-Host "  ✓ Already installed - Skipping" -ForegroundColor Green
+            return $true
+        }
+        
+        Write-Host "  [2/3] Downloading and installing..." -ForegroundColor Yellow
+        Write-Host "  → This may take 3-5 minutes..." -ForegroundColor Gray
+        
+        $AdobeInstall = winget install --id Adobe.Acrobat.Reader.64-bit `
+            --exact --silent --accept-package-agreements --accept-source-agreements `
+            --override "/sPB /rs /msi" 2>&1
+        
+        Write-Host "  [3/3] Verifying installation..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+        
+        $AdobeCheck = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+            Where-Object { $_.DisplayName -match "Adobe Acrobat Reader" }
+        
+        if ($AdobeCheck) {
+            Write-Log "  ✓ Adobe Reader installed successfully"
+            Write-Host "  ✓ Installation completed successfully!" -ForegroundColor Green
+            return $true
         } else {
-            Write-Log "WARNING: Encompass installation returned code $($EncompassInstall.ExitCode)"
+            Write-Log "  ⚠ Adobe Reader installation completed but not detected in registry"
+            Write-Host "  ⚠ Installation may need verification" -ForegroundColor Yellow
+            return $false
         }
         
     } catch {
-        Write-Log "ERROR: Encompass installation failed: $($_.Exception.Message)"
+        Write-Log "ERROR: Adobe Reader installation failed: $($_.Exception.Message)"
+        Write-Host "  ✗ Installation failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
-    
-} else {
-    Write-Log "INFO: Encompass not found - will be installed via separate Intune package"
 }
 
-Start-Sleep -Seconds 3
+function Test-EncompassInstaller {
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  ENCOMPASS SMART CLIENT" -ForegroundColor White
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Log "Checking for Encompass Smart Client..."
+    
+    Write-Host "  → Checking for Adobe Reader (prerequisite)..." -ForegroundColor Gray
+    Start-Sleep -Seconds 3
+    
+    $AdobeInstalled = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+        Where-Object { $_.DisplayName -match "Adobe Acrobat Reader" }
+    
+    if (-not $AdobeInstalled) {
+        Write-Log "WARNING: Adobe Reader not detected in registry, but continuing anyway..."
+        Write-Host "  ⚠ Adobe Reader not detected (may be needed for Encompass)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  ✓ Adobe Reader detected" -ForegroundColor Green
+    }
+    
+    Write-Host "  → Checking for Encompass..." -ForegroundColor Gray
+    Start-Sleep -Seconds 3
+    
+    $EncompassInstalled = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+        Where-Object { $_.DisplayName -match "Encompass" }
+    
+    if ($EncompassInstalled) {
+        Write-Log "  ✓ Encompass already installed: $($EncompassInstalled.DisplayName)"
+        Write-Host "  ✓ Encompass already installed" -ForegroundColor Green
+    } else {
+        Write-Log "INFO: Encompass not found - will be installed via separate Intune package"
+        Write-Host "  ℹ Encompass not found - will be deployed separately via Intune" -ForegroundColor Cyan
+    }
+}
 
-# === PHASE 4: Installation Verification ===
+function Invoke-PostConfiguration {
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  POST-INSTALLATION CONFIGURATION" -ForegroundColor White
+    Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Log "Starting post-installation configuration..."
+    
+    # Intune Sync
+    Write-Host "  [1/2] Triggering Intune device sync..." -ForegroundColor Yellow
+    Write-Host "  → Contacting Intune service..." -ForegroundColor Gray
+    try {
+        Start-Process -FilePath "C:\Program Files (x86)\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe" `
+            -ArgumentList "-SyncNow" -NoNewWindow -ErrorAction SilentlyContinue
+        Write-Log "Intune sync triggered"
+        Write-Host "  ✓ Intune sync triggered" -ForegroundColor Green
+    } catch {
+        Write-Log "WARNING: Could not trigger Intune sync: $($_.Exception.Message)"
+        Write-Host "  ⚠ Could not trigger Intune sync (may not be enrolled yet)" -ForegroundColor Yellow
+    }
+    
+    # Group Policy Update
+    Write-Host "  [2/2] Updating Group Policies..." -ForegroundColor Yellow
+    Write-Host "  → Running gpupdate..." -ForegroundColor Gray
+    try {
+        Start-Process -FilePath "gpupdate.exe" -ArgumentList "/force" -NoNewWindow -Wait
+        Write-Log "Group Policy updated"
+        Write-Host "  ✓ Group Policy updated" -ForegroundColor Green
+    } catch {
+        Write-Log "WARNING: Could not update Group Policy: $($_.Exception.Message)"
+        Write-Host "  ⚠ Could not update Group Policy" -ForegroundColor Yellow
+    }
+}
+
+# ============================================
+# MAIN SCRIPT
+# ============================================
+
+# Create log folder
+if (-not (Test-Path $LogFolder)) {
+    New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null
+}
+
+# Script header
+Clear-Host
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║                                                            ║" -ForegroundColor Cyan
+Write-Host "║        WINDOWS DEVICE ENROLLMENT SCRIPT V1.2               ║" -ForegroundColor White
+Write-Host "║        Enhanced Verbose Edition                            ║" -ForegroundColor Gray
+Write-Host "║                                                            ║" -ForegroundColor Cyan
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Log "=== Enrollment Script V1.2 Started ==="
+Write-Log "Running as: $env:COMPUTERNAME\$env:USERNAME"
+
+Write-Host "  Computer: $env:COMPUTERNAME" -ForegroundColor White
+Write-Host "  User Context: $env:USERNAME" -ForegroundColor White
+Write-Host "  Log File: $LogFile" -ForegroundColor Gray
+Write-Host ""
+
+# Verify Winget
+if (-not (Test-WingetAvailable)) {
+    Write-Log "FATAL: Cannot proceed without Winget"
+    Write-Host ""
+    Write-Host "  ✗ FATAL ERROR: Winget is required but not found" -ForegroundColor Red
+    Write-Host "  Press any key to exit..." -ForegroundColor Yellow
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit 1
+}
+
+Write-Host ""
+Start-Sleep -Seconds 2
+
+# ============================================
+# PHASE 1: Standard Applications
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  PHASE 1: INSTALLING STANDARD APPLICATIONS                ║" -ForegroundColor Green
+Write-Host "║  Total Apps: $($StandardApps.Count)                                                   ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Log "=== PHASE 1: Installing Standard Applications ==="
+
+$SuccessCount = 0
+$FailCount = 0
+$AppNum = 1
+
+foreach ($App in $StandardApps) {
+    $Result = Install-App -App $App -CurrentNum $AppNum -TotalApps $StandardApps.Count
+    
+    if ($Result) {
+        $SuccessCount++
+    } else {
+        $FailCount++
+    }
+    
+    $AppNum++
+    Start-Sleep -Seconds 2
+}
+
+Write-Host ""
+Write-Host "  Phase 1 Summary:" -ForegroundColor Cyan
+Write-Host "  ✓ Successful: $SuccessCount" -ForegroundColor Green
+if ($FailCount -gt 0) {
+    Write-Host "  ✗ Failed: $FailCount" -ForegroundColor Red
+}
+Write-Host ""
+
+# ============================================
+# PHASE 2: Adobe Acrobat Reader
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  PHASE 2: INSTALLING ADOBE ACROBAT READER                 ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Log "=== PHASE 2: Installing Adobe Acrobat Reader ==="
+
+$AdobeResult = Install-AdobeReader
+Start-Sleep -Seconds 2
+
+# ============================================
+# PHASE 3: Encompass Check
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  PHASE 3: ENCOMPASS SMART CLIENT CHECK                    ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Log "=== PHASE 3: Checking Encompass Smart Client ==="
+
+Test-EncompassInstaller
+Start-Sleep -Seconds 2
+
+# ============================================
+# PHASE 4: Installation Verification
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  PHASE 4: INSTALLATION VERIFICATION                       ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Log "=== PHASE 4: Installation Verification ==="
-Start-Sleep -Seconds 3
+
+Write-Host ""
+Write-Host "  Verifying installed applications..." -ForegroundColor Yellow
+Write-Host ""
 
 $VerificationChecks = @(
-    @{ Name = "RingCentral"; Pattern = "RingCentral" },
-    @{ Name = "Microsoft 365"; Pattern = "Microsoft 365" },
-    @{ Name = "Teams"; Pattern = "Microsoft Teams" },
-    @{ Name = "OneDrive"; Pattern = "OneDrive" },
-    @{ Name = "Azure VPN"; Pattern = "Azure VPN" },
-    @{ Name = "Dynamic Theme"; Pattern = "Dynamic Theme" },
-    @{ Name = "Adobe"; Pattern = "Adobe Acrobat" },
+    @{ Name = "RingCentral"; Pattern = "RingCentral" }
+    @{ Name = "Microsoft 365"; Pattern = "Microsoft 365|Office" }
+    @{ Name = "Teams"; Pattern = "Teams" }
+    @{ Name = "OneDrive"; Pattern = "OneDrive" }
+    @{ Name = "Azure VPN"; Pattern = "Azure VPN" }
+    @{ Name = "Dynamic Theme"; Pattern = "Dynamic Theme" }
+    @{ Name = "Adobe"; Pattern = "Adobe Acrobat" }
     @{ Name = "Encompass"; Pattern = "Encompass" }
 )
 
+$InstalledCount = 0
+$NotInstalledCount = 0
+
 foreach ($Check in $VerificationChecks) {
+    Write-Host "  Checking $($Check.Name)..." -NoNewline -ForegroundColor Gray
+    
     try {
         $Found = winget list | Select-String -Pattern $Check.Pattern
         
         if ($Found) {
-            Write-Log "[OK] VERIFIED: $($Check.Name) is installed"
+            Write-Host " ✓" -ForegroundColor Green
+            Write-Log "[VERIFIED] $($Check.Name) is installed"
+            $InstalledCount++
         } else {
-            Write-Log "[MISSING] NOT FOUND: $($Check.Name) may not be installed"
+            Write-Host " ✗" -ForegroundColor Red
+            Write-Log "[MISSING] $($Check.Name) not found"
+            $NotInstalledCount++
         }
-        
-        Start-Sleep -Seconds 1
-        
     } catch {
+        Write-Host " ?" -ForegroundColor Yellow
         Write-Log "[ERROR] Could not verify $($Check.Name): $($_.Exception.Message)"
+        $NotInstalledCount++
     }
+    
+    Start-Sleep -Milliseconds 500
 }
 
-# === PHASE 5: Post-Installation Configuration ===
+Write-Host ""
+Write-Host "  Verification Summary:" -ForegroundColor Cyan
+Write-Host "  ✓ Installed: $InstalledCount" -ForegroundColor Green
+if ($NotInstalledCount -gt 0) {
+    Write-Host "  ✗ Not Installed: $NotInstalledCount" -ForegroundColor Red
+}
+Write-Host ""
+
+# ============================================
+# PHASE 5: Post-Configuration
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  PHASE 5: POST-INSTALLATION CONFIGURATION                 ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Log "=== PHASE 5: Post-Installation Configuration ==="
 
-# Trigger Intune sync
-Write-Log "Triggering Intune device sync..."
-try {
-    $IntuneSync = Get-ScheduledTask | Where-Object { $_.TaskName -eq "PushLaunch" }
-    if ($IntuneSync) {
-        Start-ScheduledTask -TaskName "PushLaunch" -ErrorAction SilentlyContinue
-    }
-} catch {
-    Write-Log "WARNING: Could not trigger Intune sync: $($_.Exception.Message)"
+Invoke-PostConfiguration
+
+# ============================================
+# COMPLETION
+# ============================================
+
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║                                                            ║" -ForegroundColor Green
+Write-Host "║  ✓ ENROLLMENT SCRIPT COMPLETED SUCCESSFULLY!               ║" -ForegroundColor White
+Write-Host "║                                                            ║" -ForegroundColor Green
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host ""
+
+Write-Log "=== Enrollment Script V1.2 Completed ==="
+Write-Log "Total Success: $SuccessCount | Total Failed: $FailCount"
+
+Write-Host "  Final Summary:" -ForegroundColor Cyan
+Write-Host "  • Applications Installed: $SuccessCount" -ForegroundColor White
+Write-Host "  • Applications Failed: $FailCount" -ForegroundColor White
+Write-Host "  • Verified Installations: $InstalledCount" -ForegroundColor White
+Write-Host "  • Log File: $LogFile" -ForegroundColor Gray
+Write-Host ""
+
+if ($FailCount -gt 0 -or $NotInstalledCount -gt 0) {
+    Write-Host "  ⚠ Some installations may need attention" -ForegroundColor Yellow
+    Write-Host "  → Review the log file for details" -ForegroundColor Yellow
+} else {
+    Write-Host "  ✓ All installations completed successfully!" -ForegroundColor Green
 }
 
-# Update Group Policy
-Write-Log "Updating Group Policies..."
-try {
-    gpupdate /force | Out-Null
-    Write-Log "Group Policy updated"
-} catch {
-    Write-Log "WARNING: Group Policy update failed: $($_.Exception.Message)"
-}
-
-# Final summary
-Write-Log "=== Enrollment Script V1.1 Completed ==="
-Write-Log "Total apps processed: $AppCount"
-
-Start-Sleep -Seconds 1
-
-Write-Log "Log file saved to: $LogFile"
-Write-Log ""
-Write-Log "INSTALLED APPLICATIONS:"
-Write-Log "  [X] RingCentral"
-Write-Log "  [X] Microsoft 365 Apps"
-Write-Log "  [X] Microsoft Teams"
-Write-Log "  [X] Microsoft OneDrive"
-Write-Log "  [X] Azure VPN Client"
-Write-Log "  [X] Dynamic Theme"
-Write-Log "  [X] Adobe Acrobat Reader DC"
-Write-Log "  [ ] Encompass (via separate Intune package)"
-Write-Log ""
-Write-Log "NEXT STEPS:"
-Write-Log "1. Verify all applications are working"
-Write-Log "2. Configure Azure VPN connection"
-Write-Log "3. Open Dynamic Theme to set your preferred light/dark mode"
-Write-Log "4. V2 will add: Defender onboarding + VPN profile import"
-Write-Log ""
+Write-Host ""
+Write-Host "  Press any key to close..." -ForegroundColor Cyan
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 exit 0
