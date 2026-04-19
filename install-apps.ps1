@@ -1,16 +1,18 @@
 <#
 .SYNOPSIS
-    Windows Device Enrollment Script V1.2 - Enhanced Verbose Edition
+    Windows Device Enrollment Script V1.3 - System Context Apps Only
 .DESCRIPTION
-    Automatically installs standard applications for new Windows devices
-    Designed to run via Intune as SYSTEM account
+    Automatically installs system-context applications for new Windows devices
+    Designed to run via Intune as SYSTEM account during Autopilot enrollment
+    User-context apps (RingCentral, Encompass) are deployed separately via Intune
 .NOTES
     Author: IT Department
-    Version: 1.2
+    Version: 1.3
     Last Updated: 2026-04-19
-    - Added verbose output and progress indicators
-    - Real-time installation status
-    - Enhanced error reporting
+    - Removed user-context apps (RingCentral, Encompass)
+    - Removed Store apps (Dynamic Theme)
+    - Focused on system-context apps only
+    - Added Intune deployment notes
 #>
 
 #Requires -RunAsAdministrator
@@ -22,14 +24,12 @@
 $LogFolder = "C:\ProgramData\EnrollmentScript"
 $LogFile = Join-Path $LogFolder "EnrollmentLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 
-# Application List
+# System-Context Application List
 $StandardApps = @(
-    @{ Name = "RingCentral"; ID = "RingCentral.RingCentral" }
     @{ Name = "Microsoft 365 Apps"; ID = "Microsoft.Office" }
     @{ Name = "Microsoft Teams"; ID = "Microsoft.Teams" }
     @{ Name = "Microsoft OneDrive"; ID = "Microsoft.OneDrive" }
     @{ Name = "Azure VPN Client"; ID = "9NP355QT2SQB" }
-    @{ Name = "Dynamic Theme"; ID = "9NBLGGH1ZBKW" }
 )
 
 # ============================================
@@ -279,39 +279,37 @@ function Install-AdobeReader {
     }
 }
 
-function Test-EncompassInstaller {
+function Show-IntuneDeploymentInfo {
     Write-Host ""
     Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-    Write-Host "  ENCOMPASS SMART CLIENT" -ForegroundColor White
+    Write-Host "  ADDITIONAL APPS VIA INTUNE" -ForegroundColor White
     Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-    Write-Log "Checking for Encompass Smart Client..."
+    Write-Log "Displaying Intune deployment information..."
     
-    Write-Host "  → Checking for Adobe Reader (prerequisite)..." -ForegroundColor Gray
-    Start-Sleep -Seconds 3
+    Write-Host ""
+    Write-Host "  The following apps will be deployed separately via Intune:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  USER-CONTEXT APPS (Win32):" -ForegroundColor Cyan
+    Write-Host "    • RingCentral" -ForegroundColor White
+    Write-Host "      → Installs to user profile after sign-in" -ForegroundColor Gray
+    Write-Host "      → Assignment: Required" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "    • Encompass Smart Client" -ForegroundColor White
+    Write-Host "      → Installs to user profile after sign-in" -ForegroundColor Gray
+    Write-Host "      → Assignment: Required (when configured)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  OPTIONAL APPS (Microsoft Store):" -ForegroundColor Cyan
+    Write-Host "    • Dynamic Theme" -ForegroundColor White
+    Write-Host "      → Available in Company Portal" -ForegroundColor Gray
+    Write-Host "      → Assignment: Available for enrolled devices" -ForegroundColor Gray
+    Write-Host ""
     
-    $AdobeInstalled = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
-        Where-Object { $_.DisplayName -match "Adobe Acrobat Reader" }
+    Write-Log "INFO: User-context apps will install automatically after user signs in"
+    Write-Log "INFO: Optional Store apps available in Company Portal"
     
-    if (-not $AdobeInstalled) {
-        Write-Log "WARNING: Adobe Reader not detected in registry, but continuing anyway..."
-        Write-Host "  ⚠ Adobe Reader not detected (may be needed for Encompass)" -ForegroundColor Yellow
-    } else {
-        Write-Host "  ✓ Adobe Reader detected" -ForegroundColor Green
-    }
-    
-    Write-Host "  → Checking for Encompass..." -ForegroundColor Gray
-    Start-Sleep -Seconds 3
-    
-    $EncompassInstalled = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
-        Where-Object { $_.DisplayName -match "Encompass" }
-    
-    if ($EncompassInstalled) {
-        Write-Log "  ✓ Encompass already installed: $($EncompassInstalled.DisplayName)"
-        Write-Host "  ✓ Encompass already installed" -ForegroundColor Green
-    } else {
-        Write-Log "INFO: Encompass not found - will be installed via separate Intune package"
-        Write-Host "  ℹ Encompass not found - will be deployed separately via Intune" -ForegroundColor Cyan
-    }
+    Write-Host "  ℹ These apps install in USER context and cannot be installed" -ForegroundColor Cyan
+    Write-Host "    during SYSTEM-context enrollment" -ForegroundColor Cyan
+    Write-Host ""
 }
 
 function Invoke-PostConfiguration {
@@ -325,13 +323,18 @@ function Invoke-PostConfiguration {
     Write-Host "  [1/2] Triggering Intune device sync..." -ForegroundColor Yellow
     Write-Host "  → Contacting Intune service..." -ForegroundColor Gray
     try {
-        Start-Process -FilePath "C:\Program Files (x86)\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe" `
-            -ArgumentList "-SyncNow" -NoNewWindow -ErrorAction SilentlyContinue
-        Write-Log "Intune sync triggered"
-        Write-Host "  ✓ Intune sync triggered" -ForegroundColor Green
+        $IntuneAgentPath = "C:\Program Files (x86)\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe"
+        if (Test-Path $IntuneAgentPath) {
+            Start-Process -FilePath $IntuneAgentPath -ArgumentList "-SyncNow" -NoNewWindow -ErrorAction SilentlyContinue
+            Write-Log "Intune sync triggered"
+            Write-Host "  ✓ Intune sync triggered (user-context apps will install after sign-in)" -ForegroundColor Green
+        } else {
+            Write-Log "INFO: Intune Management Extension not found (device may not be enrolled yet)"
+            Write-Host "  ℹ Intune not detected (will sync after enrollment completes)" -ForegroundColor Cyan
+        }
     } catch {
         Write-Log "WARNING: Could not trigger Intune sync: $($_.Exception.Message)"
-        Write-Host "  ⚠ Could not trigger Intune sync (may not be enrolled yet)" -ForegroundColor Yellow
+        Write-Host "  ⚠ Could not trigger Intune sync (will sync automatically)" -ForegroundColor Yellow
     }
     
     # Group Policy Update
@@ -361,13 +364,13 @@ Clear-Host
 Write-Host ""
 Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║                                                            ║" -ForegroundColor Cyan
-Write-Host "║        WINDOWS DEVICE ENROLLMENT SCRIPT V1.2               ║" -ForegroundColor White
-Write-Host "║        Enhanced Verbose Edition                            ║" -ForegroundColor Gray
+Write-Host "║        WINDOWS DEVICE ENROLLMENT SCRIPT V1.3               ║" -ForegroundColor White
+Write-Host "║        System Context Apps Only                            ║" -ForegroundColor Gray
 Write-Host "║                                                            ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Log "=== Enrollment Script V1.2 Started ==="
+Write-Log "=== Enrollment Script V1.3 Started ==="
 Write-Log "Running as: $env:COMPUTERNAME\$env:USERNAME"
 
 Write-Host "  Computer: $env:COMPUTERNAME" -ForegroundColor White
@@ -389,15 +392,15 @@ Write-Host ""
 Start-Sleep -Seconds 2
 
 # ============================================
-# PHASE 1: Standard Applications
+# PHASE 1: System-Context Applications
 # ============================================
 
 Write-Host ""
 Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║  PHASE 1: INSTALLING STANDARD APPLICATIONS                ║" -ForegroundColor Green
+Write-Host "║  PHASE 1: INSTALLING SYSTEM-CONTEXT APPLICATIONS          ║" -ForegroundColor Green
 Write-Host "║  Total Apps: $($StandardApps.Count)                                                   ║" -ForegroundColor Green
 Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
-Write-Log "=== PHASE 1: Installing Standard Applications ==="
+Write-Log "=== PHASE 1: Installing System-Context Applications ==="
 
 $SuccessCount = 0
 $FailCount = 0
@@ -435,19 +438,24 @@ Write-Host "╚═════════════════════�
 Write-Log "=== PHASE 2: Installing Adobe Acrobat Reader ==="
 
 $AdobeResult = Install-AdobeReader
+if ($AdobeResult) {
+    $SuccessCount++
+} else {
+    $FailCount++
+}
 Start-Sleep -Seconds 2
 
 # ============================================
-# PHASE 3: Encompass Check
+# PHASE 3: Intune Deployment Information
 # ============================================
 
 Write-Host ""
 Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║  PHASE 3: ENCOMPASS SMART CLIENT CHECK                    ║" -ForegroundColor Green
+Write-Host "║  PHASE 3: INTUNE-DEPLOYED APPLICATIONS                    ║" -ForegroundColor Green
 Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
-Write-Log "=== PHASE 3: Checking Encompass Smart Client ==="
+Write-Log "=== PHASE 3: Intune Deployment Information ==="
 
-Test-EncompassInstaller
+Show-IntuneDeploymentInfo
 Start-Sleep -Seconds 2
 
 # ============================================
@@ -461,18 +469,15 @@ Write-Host "╚═════════════════════�
 Write-Log "=== PHASE 4: Installation Verification ==="
 
 Write-Host ""
-Write-Host "  Verifying installed applications..." -ForegroundColor Yellow
+Write-Host "  Verifying system-context applications..." -ForegroundColor Yellow
 Write-Host ""
 
 $VerificationChecks = @(
-    @{ Name = "RingCentral"; Pattern = "RingCentral" }
     @{ Name = "Microsoft 365"; Pattern = "Microsoft 365|Office" }
     @{ Name = "Teams"; Pattern = "Teams" }
     @{ Name = "OneDrive"; Pattern = "OneDrive" }
     @{ Name = "Azure VPN"; Pattern = "Azure VPN" }
-    @{ Name = "Dynamic Theme"; Pattern = "Dynamic Theme" }
-    @{ Name = "Adobe"; Pattern = "Adobe Acrobat" }
-    @{ Name = "Encompass"; Pattern = "Encompass" }
+    @{ Name = "Adobe Reader"; Pattern = "Adobe Acrobat" }
 )
 
 $InstalledCount = 0
@@ -534,13 +539,14 @@ Write-Host "║                                                            ║" 
 Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
 
-Write-Log "=== Enrollment Script V1.2 Completed ==="
-Write-Log "Total Success: $SuccessCount | Total Failed: $FailCount"
+Write-Log "=== Enrollment Script V1.3 Completed ==="
+Write-Log "System-context apps installed: $SuccessCount | Failed: $FailCount"
 
 Write-Host "  Final Summary:" -ForegroundColor Cyan
-Write-Host "  • Applications Installed: $SuccessCount" -ForegroundColor White
-Write-Host "  • Applications Failed: $FailCount" -ForegroundColor White
+Write-Host "  • System-Context Apps Installed: $SuccessCount" -ForegroundColor White
+Write-Host "  • System-Context Apps Failed: $FailCount" -ForegroundColor White
 Write-Host "  • Verified Installations: $InstalledCount" -ForegroundColor White
+Write-Host "  • User-Context Apps: Will install via Intune after sign-in" -ForegroundColor Cyan
 Write-Host "  • Log File: $LogFile" -ForegroundColor Gray
 Write-Host ""
 
@@ -548,7 +554,8 @@ if ($FailCount -gt 0 -or $NotInstalledCount -gt 0) {
     Write-Host "  ⚠ Some installations may need attention" -ForegroundColor Yellow
     Write-Host "  → Review the log file for details" -ForegroundColor Yellow
 } else {
-    Write-Host "  ✓ All installations completed successfully!" -ForegroundColor Green
+    Write-Host "  ✓ All system-context apps completed successfully!" -ForegroundColor Green
+    Write-Host "  ✓ User-context apps will install automatically after user signs in" -ForegroundColor Green
 }
 
 Write-Host ""
